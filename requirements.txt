@@ -1,0 +1,14 @@
+transformers
+sentence-transformers
+langchain
+torch
+faiss-cpu
+numpy
+langchain_community
+pypdf
+chroma
+flask 
+pdfminer.six
+streamlit
+psycopg2
+pyodbc
