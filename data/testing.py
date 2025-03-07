@@ -180,76 +180,189 @@ def setup_qa_model(model_name="asadjaved/urdu-qa"):
 # if __name__ == "__main__":
 #     main()
 
+# import torch
+# from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+
+# def load_multilingual_model():
+#     """
+#     Load a multilingual model that can handle Urdu
+#     """
+#     try:
+#         # Use multilingual models that support Urdu
+#         model_name = "google/mt5-base"
+        
+#         tokenizer = AutoTokenizer.from_pretrained(model_name)
+#         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        
+#         # Set device
+#         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#         model.to(device)
+        
+#         return tokenizer, model
+    
+#     except Exception as e:
+#         print(f"Error loading model: {e}")
+#         return None, None
+
+# def generate_text(tokenizer, model, prompt, max_length=100):
+#     """
+#     Generate text using the multilingual model
+#     """
+#     try:
+#         # Ensure prompt is in Urdu
+#         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+#         # Encode input
+#         input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+        
+#         # Generate text
+#         output = model.generate(
+#             input_ids, 
+#             max_length=max_length, 
+#             num_return_sequences=1,
+#             do_sample=True
+#         )
+        
+#         # Decode and return generated text
+#         return tokenizer.decode(output[0], skip_special_tokens=True)
+    
+#     except Exception as e:
+#         print(f"Text generation error: {e}")
+#         return None
+
+# def main():
+#     # Load multilingual model
+#     tokenizer, model = load_multilingual_model()
+    
+#     if tokenizer and model:
+#         # Example Urdu prompts
+#         prompts = [
+#             "آج کا دن بہت خوبصورت ہے",
+#             "پاکستان کی معیشت",
+#             "اسلام کے بنیادی اصول"
+#         ]
+        
+#         # Generate text for each prompt
+#         for prompt in prompts:
+#             print("\nPrompt:", prompt)
+#             generated_text = generate_text(tokenizer, model, prompt)
+#             print("Generated Text:", generated_text)
+
+# if __name__ == "__main__":
+#     main()
+
+
+
+# import torch
+# from transformers import pipeline
+
+# def generate_urdu_text():
+#     """
+#     Generate Urdu text using available models
+#     """
+#     try:
+#         # Use a text generation pipeline
+#         generator = pipeline('text-generation', model='gpt2')
+        
+#         # Example Urdu prompts
+#         prompts = [
+#             "آج کا دن بہت خوبصورت ہے",
+           
+#         ]
+        
+#         # Generate text for each prompt
+#         for prompt in prompts:
+#             print("\nPrompt:", prompt)
+#             generated = generator(prompt, max_length=100, num_return_sequences=1)
+#             print("Generated Text:", generated[0]['generated_text'])
+    
+#     except Exception as e:
+#         print(f"Error generating text: {e}")
+
+# # Run the generation
+# generate_urdu_text()
+
+
+# from transformers import AutoTokenizer, AutoModel
+# import torch
+
+# # Load model and tokenizer
+# model_name = "intfloat/multilingual-e5-large-instruct"
+# tokenizer = AutoTokenizer.from_pretrained(model_name)
+# model = AutoModel.from_pretrained(model_name)
+
+# # Example Urdu document
+# urdu_text = "یہ ایک مثال ہے کہ ہم اردو متن کو ایمبیڈنگ میں کیسے تبدیل کر سکتے ہیں۔"
+
+# # Convert text to tokenized input
+# inputs = tokenizer(urdu_text, return_tensors="pt", padding=True, truncation=True)
+
+# # Generate embeddings
+# with torch.no_grad():
+#     embeddings = model(**inputs).last_hidden_state.mean(dim=1)  # Mean pooling
+
+# print("Embedding shape:", embeddings.shape)  # Should be (1, 1024)
+
+
+from transformers import AutoTokenizer, AutoModel
 import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+import faiss
+import numpy as np
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-def load_multilingual_model():
-    """
-    Load a multilingual model that can handle Urdu
-    """
-    try:
-        # Use multilingual models that support Urdu
-        model_name = "google/mt5-base"
-        
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-        
-        # Set device
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model.to(device)
-        
-        return tokenizer, model
-    
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        return None, None
+import torch
+print(torch.cuda.is_available())
 
-def generate_text(tokenizer, model, prompt, max_length=100):
-    """
-    Generate text using the multilingual model
-    """
-    try:
-        # Ensure prompt is in Urdu
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        # Encode input
-        input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
-        
-        # Generate text
-        output = model.generate(
-            input_ids, 
-            max_length=max_length, 
-            num_return_sequences=1,
-            do_sample=True
-        )
-        
-        # Decode and return generated text
-        return tokenizer.decode(output[0], skip_special_tokens=True)
-    
-    except Exception as e:
-        print(f"Text generation error: {e}")
-        return None
+model_name = "intfloat/multilingual-e5-large-instruct"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModel.from_pretrained(model_name)
 
-def main():
-    # Load multilingual model
-    tokenizer, model = load_multilingual_model()
-    
-    if tokenizer and model:
-        # Example Urdu prompts
-        prompts = [
-            "آج کا دن بہت خوبصورت ہے",
-            "پاکستان کی معیشت",
-            "اسلام کے بنیادی اصول"
-        ]
-        
-        # Generate text for each prompt
-        for prompt in prompts:
-            print("\nPrompt:", prompt)
-            generated_text = generate_text(tokenizer, model, prompt)
-            print("Generated Text:", generated_text)
+urdu_docs = [
+    "یہ ایک مثال ہے کہ ہم اردو متن کو ایمبیڈنگ میں کیسے تبدیل کر سکتے ہیں۔",
+    "مشین لرننگ اور قدرتی زبان کی پروسیسنگ کا استعمال بہت عام ہو چکا ہے۔",
+    "اردو میں ڈیٹا تلاش کرنے کے لئے ریکال ماڈل بہترین ثابت ہو سکتا ہے۔"
+]
 
-if __name__ == "__main__":
-    main()
+def get_embedding(text):
+    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+    with torch.no_grad():
+        embedding = model(**inputs).last_hidden_state.mean(dim=1).squeeze().numpy()
+    return embedding
+
+embeddings = np.array([get_embedding(doc) for doc in urdu_docs])
+
+index = faiss.IndexFlatL2(embeddings.shape[1])
+index.add(embeddings)
+
+print("✅ Urdu documents stored in FAISS!")
 
 
+def retrieve_top_k(query, k=2):
+    query_embedding = get_embedding(query).reshape(1, -1)
+    distances, indices = index.search(query_embedding, k)
+    return [urdu_docs[i] for i in indices[0]]
 
+# Test retrieval
+query = "مشین لرننگ کیا ہے؟"
+retrieved_docs = retrieve_top_k(query)
+
+print("🔍 Retrieved Urdu Documents:")
+for doc in retrieved_docs:
+    print("-", doc)
+
+llm_name = "bigscience/bloom-1b7"
+llm_tokenizer = AutoTokenizer.from_pretrained(llm_name)
+llm_model = AutoModelForCausalLM.from_pretrained(llm_name, torch_dtype=torch.float16, device_map="cpu")
+
+def generate_answer(query):
+    context = "\n".join(retrieve_top_k(query, k=2))
+    prompt = f"سوال: {query}\n\nیہ معلومات مددگار ہو سکتی ہیں:\n{context}\n\nجواب:"
+
+    inputs = llm_tokenizer(prompt, return_tensors="pt").to("cpu")
+    output = llm_model.generate(**inputs, max_new_tokens=200)
+    return llm_tokenizer.decode(output[0], skip_special_tokens=True)
+
+# Example
+query = "اردو میں مشین لرننگ کے استعمالات کیا ہیں؟"
+answer = generate_answer(query)
+print("🤖 AI Answer:", answer)
