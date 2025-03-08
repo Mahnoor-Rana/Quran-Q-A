@@ -72,53 +72,53 @@
 
 # print(f"Answer: {result['answer']}")
 
-import PyPDF2
-import torch
-from transformers import AutoTokenizer, AutoModelForQuestionAnswering
+# import PyPDF2
+# import torch
+# from transformers import AutoTokenizer, AutoModelForQuestionAnswering
 
-def extract_text_from_pdf(pdf_path):
-    """
-    Extract text from a PDF file
+# def extract_text_from_pdf(pdf_path):
+#     """
+#     Extract text from a PDF file
     
-    Args:
-        pdf_path (str): Path to the PDF file
+#     Args:
+#         pdf_path (str): Path to the PDF file
     
-    Returns:
-        str: Extracted text from the PDF
-    """
-    try:
-        with open(pdf_path, 'rb') as file:
-            reader = PyPDF2.PdfReader(file)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text()
-        return text
-    except Exception as e:
-        print(f"Error extracting text from PDF: {e}")
-        return None
+#     Returns:
+#         str: Extracted text from the PDF
+#     """
+#     try:
+#         with open(pdf_path, 'rb') as file:
+#             reader = PyPDF2.PdfReader(file)
+#             text = ""
+#             for page in reader.pages:
+#                 text += page.extract_text()
+#         return text
+#     except Exception as e:
+#         print(f"Error extracting text from PDF: {e}")
+#         return None
 
-def setup_qa_model(model_name="asadjaved/urdu-qa"):
-    """
-    Load Urdu Question Answering model and tokenizer
+# def setup_qa_model(model_name="asadjaved/urdu-qa"):
+#     """
+#     Load Urdu Question Answering model and tokenizer
     
-    Args:
-        model_name (str): Hugging Face model identifier
+#     Args:
+#         model_name (str): Hugging Face model identifier
     
-    Returns:
-        tuple: (tokenizer, model)
-    """
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForQuestionAnswering.from_pretrained(model_name)
+#     Returns:
+#         tuple: (tokenizer, model)
+#     """
+#     try:
+#         tokenizer = AutoTokenizer.from_pretrained(model_name)
+#         model = AutoModelForQuestionAnswering.from_pretrained(model_name)
         
-        # Move to GPU if available
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model.to(device)
+#         # Move to GPU if available
+#         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#         model.to(device)
         
-        return tokenizer, model
-    except Exception as e:
-        print(f"Error loading QA model: {e}")
-        return None, None
+#         return tokenizer, model
+#     except Exception as e:
+#         print(f"Error loading QA model: {e}")
+#         return None, None
 
 # def answer_question(context, question, tokenizer, model):
 #     """
@@ -303,66 +303,312 @@ def setup_qa_model(model_name="asadjaved/urdu-qa"):
 
 # print("Embedding shape:", embeddings.shape)  # Should be (1, 1024)
 
-
-from transformers import AutoTokenizer, AutoModel
+import os
 import torch
-import faiss
 import numpy as np
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import faiss
+import gc
+import time
+import re
+from pathlib import Path
+import fitz  # PyMuPDF
+from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
 
-import torch
-print(torch.cuda.is_available())
+# ===== Configuration =====
+PDF_FOLDER = "./data"  # Update this path to where your Quran PDFs are stored
+FAISS_INDEX_PATH = "quran_faiss_index.bin"
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+GENERATION_MODEL = "bigscience/bloomz-1b1"  # Good balance of size and Urdu support
+CHUNK_SIZE = 256
+MAX_GENERATION_LENGTH = 150
 
-model_name = "intfloat/multilingual-e5-large-instruct"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModel.from_pretrained(model_name)
+# ===== Memory Management =====
+gc.collect()
+torch.cuda.empty_cache() if torch.cuda.is_available() else None
+print("Memory cleared")
 
-urdu_docs = [
-    "یہ ایک مثال ہے کہ ہم اردو متن کو ایمبیڈنگ میں کیسے تبدیل کر سکتے ہیں۔",
-    "مشین لرننگ اور قدرتی زبان کی پروسیسنگ کا استعمال بہت عام ہو چکا ہے۔",
-    "اردو میں ڈیٹا تلاش کرنے کے لئے ریکال ماڈل بہترین ثابت ہو سکتا ہے۔"
-]
+# ===== Text Extraction Functions =====
+def extract_text_from_pdf(pdf_path):
+    """Extract text from a single PDF with proper RTL handling"""
+    try:
+        doc = fitz.open(pdf_path)
+        text = ""
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            # Use TEXT mode for better Unicode extraction
+            page_text = page.get_text("text") 
+            text += page_text + "\n\n"
+        doc.close()
+        return clean_arabic_text(text)
+    except Exception as e:
+        print(f"Error extracting {Path(pdf_path).name}: {e}")
+        return ""
 
-def get_embedding(text):
-    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+def clean_arabic_text(text):
+    """Clean and normalize Arabic/Urdu text"""
+    # Remove CID placeholders that indicate encoding issues
+    text = re.sub(r'\(cid:[0-9]+\)', '', text)
+    
+    # Normalize whitespace
+    text = re.sub(r'\s{2,}', ' ', text)
+    
+    # Remove non-printable characters
+    text = ''.join(c for c in text if c.isprintable())
+    
+    # Remove isolated diacritics
+    arabic_diacritics = re.compile(r'[\u064B-\u065F\u0670\u0674\u06D6-\u06ED]+')
+    text = arabic_diacritics.sub('', text)
+    
+    return text
+
+def extract_all_pdfs(folder_path):
+    """Process all PDFs in a folder"""
+    print(f"Processing PDFs from: {folder_path}")
+    all_text = ""
+    
+    for filename in os.listdir(folder_path):
+        if filename.lower().endswith('.pdf'):
+            pdf_path = os.path.join(folder_path, filename)
+            print(f"Processing: {filename}")
+            pdf_text = extract_text_from_pdf(pdf_path)
+            all_text += pdf_text + "\n\n"
+    
+    # Save the combined text for inspection
+    with open("extracted_text.txt", "w", encoding="utf-8") as f:
+        f.write(all_text)
+    
+    print(f"Extracted {len(all_text)} characters")
+    return all_text
+
+# ===== Text Processing Functions =====
+def split_text(text, chunk_size=CHUNK_SIZE):
+    """Split text into chunks of specified size"""
+    print("Splitting text into chunks...")
+    # For Arabic/Urdu, split on periods or new lines for better context
+    sentences = re.split(r'[۔،.؟!\n]', text)
+    chunks = []
+    current_chunk = ""
+    
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+            
+        # If adding this sentence exceeds chunk size, start a new chunk
+        if len(current_chunk) + len(sentence) > chunk_size:
+            if current_chunk:
+                chunks.append(current_chunk)
+            current_chunk = sentence
+        else:
+            if current_chunk:
+                current_chunk += " " + sentence
+            else:
+                current_chunk = sentence
+    
+    # Add the last chunk if not empty
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    print(f"Created {len(chunks)} chunks")
+    return chunks
+
+# ===== Model Loading =====
+def load_models():
+    print("Loading embedding model...")
+    embed_tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL)
+    embed_model = AutoModel.from_pretrained(EMBEDDING_MODEL).to("cpu")
+    print("✅ Embedding model loaded")
+
+    print("Loading generation model...")
+    gen_tokenizer = AutoTokenizer.from_pretrained(GENERATION_MODEL)
+    gen_model = AutoModelForCausalLM.from_pretrained(
+        GENERATION_MODEL,
+        low_cpu_mem_usage=True,
+        torch_dtype=torch.float32
+    ).to("cpu")
+    print("✅ Generation model loaded")
+    
+    return embed_tokenizer, embed_model, gen_tokenizer, gen_model
+
+# ===== Embedding Functions =====
+def get_embedding(text, embed_tokenizer, embed_model):
+    """Generate embeddings for a text chunk"""
+    inputs = embed_tokenizer(
+        text, 
+        return_tensors="pt", 
+        padding=True, 
+        truncation=True, 
+        max_length=CHUNK_SIZE
+    ).to("cpu")
+    
     with torch.no_grad():
-        embedding = model(**inputs).last_hidden_state.mean(dim=1).squeeze().numpy()
-    return embedding
+        model_output = embed_model(**inputs)
+        # Use mean pooling for sentence embeddings
+        embeddings = model_output.last_hidden_state.mean(dim=1).squeeze().numpy()
+        # Handle single-dimension case
+        if len(embeddings.shape) == 0:
+            embeddings = np.array([embeddings])
+        return embeddings.astype("float32")
 
-embeddings = np.array([get_embedding(doc) for doc in urdu_docs])
+# ===== FAISS Index Functions =====
+def create_faiss_index(chunks, embed_tokenizer, embed_model):
+    """Create a FAISS index from text chunks"""
+    print("Generating embeddings...")
+    embeddings = []
+    
+    # Process chunks with progress feedback
+    for i, chunk in enumerate(chunks):
+        if i % 10 == 0:
+            print(f"Processing chunk {i}/{len(chunks)}")
+        embedding = get_embedding(chunk, embed_tokenizer, embed_model)
+        embeddings.append(embedding)
+    
+    # Convert to numpy array
+    embeddings_array = np.array(embeddings).astype("float32")
+    
+    # Create and save FAISS index
+    index = faiss.IndexFlatL2(embeddings_array.shape[1])
+    index.add(embeddings_array)
+    faiss.write_index(index, FAISS_INDEX_PATH)
+    print(f"FAISS index created and saved to {FAISS_INDEX_PATH}")
+    
+    return index
 
-index = faiss.IndexFlatL2(embeddings.shape[1])
-index.add(embeddings)
+def load_or_create_index(text, embed_tokenizer, embed_model):
+    """Load existing FAISS index or create new one"""
+    chunks = split_text(text)
+    
+    if os.path.exists(FAISS_INDEX_PATH):
+        print("Loading existing FAISS index...")
+        index = faiss.read_index(FAISS_INDEX_PATH)
+        print(f"Loaded index with {index.ntotal} vectors")
+    else:
+        print("Creating new FAISS index...")
+        index = create_faiss_index(chunks, embed_tokenizer, embed_model)
+    
+    return index, chunks
 
-print("✅ Urdu documents stored in FAISS!")
+# ===== Retrieval Functions =====
+def retrieve_context(query, index, chunks, embed_tokenizer, embed_model, top_k=3):
+    """Retrieve most relevant chunks for a query"""
+    print(f"Retrieving context for: {query}")
+    
+    # Get query embedding
+    query_embedding = get_embedding(query, embed_tokenizer, embed_model).reshape(1, -1)
+    
+    # Search index
+    distances, indices = index.search(query_embedding, top_k)
+    
+    # Get text chunks
+    retrieved_chunks = [chunks[i] for i in indices[0]]
+    
+    # Format as context
+    context = "\n\n".join(retrieved_chunks)
+    return context
+
+# ===== Generation Functions =====
+def generate_answer(query, context, gen_tokenizer, gen_model):
+    """Generate an answer based on query and context"""
+    print("Generating answer...")
+    
+    # Format prompt in Urdu
+    prompt = f"""سوال: {query}
+
+معلومات مددگار:
+{context}
+
+براہ کرم جواب اردو میں تفصیل سے دیں:"""
 
 
-def retrieve_top_k(query, k=2):
-    query_embedding = get_embedding(query).reshape(1, -1)
-    distances, indices = index.search(query_embedding, k)
-    return [urdu_docs[i] for i in indices[0]]
+    # Tokenize
+    inputs = gen_tokenizer(prompt, return_tensors="pt", max_length=512, truncation=True).to("cpu")
+    
+    # Generate
+    print("Running generation...")
+    gen_start = time.time()
+    with torch.no_grad():
+        output_ids = gen_model.generate(
+            **inputs,
+            max_new_tokens=MAX_GENERATION_LENGTH,
+            num_beams=2,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.9,
+            pad_token_id=gen_tokenizer.eos_token_id
+        )
+    gen_time = time.time() - gen_start
+    
+    # Decode
+    output = gen_tokenizer.decode(output_ids[0], skip_special_tokens=True)
+    
+    print(f"Generation completed in {gen_time:.2f} seconds")
+    return output
 
-# Test retrieval
-query = "مشین لرننگ کیا ہے؟"
-retrieved_docs = retrieve_top_k(query)
+# ===== Main RAG System =====
+def setup_rag_system():
+    """Set up the complete RAG system"""
+    # Load models
+    embed_tokenizer, embed_model, gen_tokenizer, gen_model = load_models()
+    
+    # Extract text from PDFs
+    text = extract_all_pdfs(PDF_FOLDER)
+    
+    # Check if text was extracted successfully
+    if not text or len(text) < 100:
+        print("ERROR: Not enough text extracted from PDFs. Check your files.")
+        print(f"Text preview: {text[:100]}")
+        return None, None, None, None, None, None
+    
+    # Create chunks and index
+    index, chunks = load_or_create_index(text, embed_tokenizer, embed_model)
+    
+    return text, chunks, index, embed_tokenizer, embed_model, gen_tokenizer, gen_model
 
-print("🔍 Retrieved Urdu Documents:")
-for doc in retrieved_docs:
-    print("-", doc)
+def answer_question(query, rag_system):
+    """Answer a question using the RAG system"""
+    chunks, index, embed_tokenizer, embed_model, gen_tokenizer, gen_model = rag_system
+    
+    # Retrieve relevant context
+    context = retrieve_context(query, index, chunks, embed_tokenizer, embed_model)
+    
+    # Generate answer
+    answer = generate_answer(query, context, gen_tokenizer, gen_model)
+    
+    return answer, context
 
-llm_name = "bigscience/bloom-1b7"
-llm_tokenizer = AutoTokenizer.from_pretrained(llm_name)
-llm_model = AutoModelForCausalLM.from_pretrained(llm_name, torch_dtype=torch.float16, device_map="cpu")
+# ===== Main Execution =====
+def main():
+    print("Setting up Urdu Quran RAG system...")
+    
+    # Setup
+    text, chunks, index, embed_tokenizer, embed_model, gen_tokenizer, gen_model = setup_rag_system()
+    
+    if not chunks or not index:
+        print("Failed to set up RAG system")
+        return
+    
+    rag_system = (chunks, index, embed_tokenizer, embed_model, gen_tokenizer, gen_model)
+    
+    # Interactive Q&A loop
+    while True:
+        user_query = input("\nEnter your question in Urdu (or 'exit' to quit): ")
+        
+        if user_query.lower() == 'exit':
+            break
+            
+        start_time = time.time()
+        answer, context = answer_question(user_query, rag_system)
+        total_time = time.time() - start_time
+        
+        print("\n🤖 AI Answer:")
+        print(answer)
+        print(f"\n(Generated in {total_time:.2f} seconds)")
+        
+        # Optional: show the retrieved context
+        show_context = input("\nShow retrieved context? (y/n): ")
+        if show_context.lower() == 'y':
+            print("\nContext used:")
+            print(context)
 
-def generate_answer(query):
-    context = "\n".join(retrieve_top_k(query, k=2))
-    prompt = f"سوال: {query}\n\nیہ معلومات مددگار ہو سکتی ہیں:\n{context}\n\nجواب:"
-
-    inputs = llm_tokenizer(prompt, return_tensors="pt").to("cpu")
-    output = llm_model.generate(**inputs, max_new_tokens=200)
-    return llm_tokenizer.decode(output[0], skip_special_tokens=True)
-
-# Example
-query = "اردو میں مشین لرننگ کے استعمالات کیا ہیں؟"
-answer = generate_answer(query)
-print("🤖 AI Answer:", answer)
+if __name__ == "__main__":
+    main()
